@@ -32,7 +32,8 @@ class Cmd:
     def run(cls, cmd: str | list, strip=True) -> str:
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
-        stdout = subprocess.run(cmd, text=True, check=True).stdout
+
+        stdout = subprocess.run(cmd, text=True, capture_output=True, check=True).stdout
         if strip:
             stdout = stdout.strip()
         return stdout
@@ -41,14 +42,11 @@ class Cmd:
     def cmd(cls, cmd: str | list):
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
+        print(f"> {' '.join(cmd)}")
 
         proc = subprocess.run(cmd, text=True, check=False)
         if proc.returncode != 0:
             print(f'failed command "{cmd}":')
-            print("stdout:")
-            print(textwrap.indent(proc.stdout, "    "))
-            print("stderr:")
-            print(textwrap.indent(proc.stderr, "    "))
             raise subprocess.SubprocessError(f"command return code {proc.returncode}")
 
 
@@ -62,9 +60,10 @@ def update_versions():
             d[version.strip()] = server.strip()
         return json.dumps(d, indent=4)
 
+    print("UPDATING VERSIONS")
     url = "https://gist.github.com/77a982a7503669c3e1acb0a0cf6127e9.git"
     Cmd.cmd("rm -rf gist")
-    Cmd.cmd(f"git clone --depth=1 {url} gist")
+    Cmd.cmd(f"git clone --depth=1 --progress {url} gist")
     Cmd.fwrite("versions.json", convert())
     Cmd.cmd("rm -rf gist")
 
