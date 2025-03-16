@@ -1,0 +1,15 @@
+{
+    "difficulty": "easy",
+    "hardcore": "false",
+    "simulation-distance": "10",
+    "view-distance": "10",
+    "gamemode": "survival",
+
+    "initial-disabled-packs": "",
+    "initial-enabled-packs": "vanilla",
+
+    "motd": "HELLO ON TLUCANTI SERVER",
+    "enable-command-block": "true",
+    "online-mode": "false",
+    "use-native-transport": "false",
+}
