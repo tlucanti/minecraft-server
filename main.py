@@ -8,8 +8,8 @@ import json
 import pathlib
 import shlex
 import subprocess
-import sys
-from typing import Any
+import os
+from typing import NoReturn
 
 SERVERS_FOLDER = "servers"
 WORLDS_FOLDER = "worlds"
@@ -38,6 +38,10 @@ def cprint(color, *args, **kwargs):
     print(color_table["reset"], end="", flush=True)
 
 
+def INFO(*args, **kwargs):
+    cprint("bblue", "[INFO]:", *args, **kwargs)
+
+
 def OK(*args, **kwargs):
     cprint("bgreen", "[ OK ]:", *args, **kwargs)
 
@@ -48,6 +52,11 @@ def WARN(*args, **kwargs):
 
 def FAIL(*args, **kwargs):
     cprint("bred", "[FAIL]:", *args, **kwargs)
+
+
+def ABORT(*args, **kwargs) -> NoReturn:
+    cprint("bred", "[INTERNAL_ERROR]:", *args, **kwargs)
+    raise RuntimeError()
 
 
 class Cmd:
@@ -177,46 +186,48 @@ class Server:
         Cmd.cmd(f"git -C {WORLDS_FOLDER} add --all")
         Cmd.cmd(f'git -C {WORLDS_FOLDER} commit --allow-empty -m "{message}"')
 
+    def run(self):
+        os.chdir(self.folder)
 
-def create_server(args: Any) -> Server:
-    cprint("yellow", f"CREATING SERVER {args.name}")
-    folder = f"{WORLDS_FOLDER}/{args.name}"
+
+def create_server(name: str, version: str) -> Server:
+    cprint("yellow", f"CREATING SERVER {name}")
+    folder = f"{WORLDS_FOLDER}/{name}"
     if pathlib.Path(folder).exists():
-        FAIL(f'server "{args.name}" already exists')
+        FAIL(f'server "{name}" already exists')
         raise RuntimeError()
 
     Cmd.cmd(f"mkdir -p {folder}")
-    Cmd.fwrite(f"{folder}/VERSION", args.version)
+    Cmd.fwrite(f"{folder}/VERSION", version)
 
-    OK(f'created server "{args.name}" with version "{args.version}"')
+    OK(f'created server "{name}" with version "{version}"')
     print()
 
-    return Server(args.name, args.version)
+    return Server(name, version)
 
 
-def find_server(args: Any, announce=True) -> Server:
+def find_server(name: str, announce=True) -> Server:
     if announce:
-        cprint("yellow", f"FINDING SERVER {args.name}")
+        cprint("yellow", f"FINDING SERVER {name}")
 
-    folder = f"{WORLDS_FOLDER}/{args.name}"
+    folder = f"{WORLDS_FOLDER}/{name}"
     if not pathlib.Path(folder).exists():
-        cprint("bred", f"server {args.name} does not exists")
+        cprint("bred", f"server {name} does not exists")
         raise RuntimeError()
 
     version = Cmd.fread(f"{folder}/VERSION")
 
-    OK(f'found server "{args.name}" with version "{version}"')
+    OK(f'found server "{name}" with version "{version}"')
     if announce:
         print()
 
-    return Server(args.name, version)
+    return Server(name, version)
 
 
-def save_server(args: Any):
-    cprint("yellow", f'SAVING SERVER "{args.name}"')
-    server = find_server(args, announce=False)
+def save_server(name: str):
+    cprint("yellow", f'SAVING SERVER "{name}"')
+    server = find_server(name, announce=False)
     server.save()
-    sys.exit(0)
 
 
 def main():
@@ -226,21 +237,22 @@ def main():
     create = subparsers.add_parser("create", help="create new server")
     create.add_argument("name")
     create.add_argument("version")
-    create.set_defaults(func=create_server)
+    create.set_defaults(action="create")
 
     run = subparsers.add_parser("run", help="run existing server")
     run.add_argument("name")
-    run.set_defaults(func=find_server)
+    run.set_defaults(action="run")
 
     save = subparsers.add_parser("save", help="save existing server to repository")
     save.add_argument("name")
-    save.set_defaults(func=save_server)
+    save.set_defaults(action="save")
 
     parser.add_argument("--list-versions", action="store_true")
     parser.add_argument("--update-versions", action="store_true")
     parser.add_argument("--prerequirements", action="store_true")
 
     args = parser.parse_args()
+    print(args)
 
     req = Requirements()
     if args.update_versions:
@@ -251,9 +263,23 @@ def main():
         req.list_versions()
         return
 
-    server = args.func(args)
+    if args.action == "create":
+        server = create_server(args.name, args.version)
+    elif args.action == "save":
+        save_server(args.name)
+        return
+    elif args.action == "run":
+        server = find_server(args.name)
+    else:
+        ABORT(f"invalid action: {args.action}")
+
     req.download_server(server.version)
     server.accept_eula()
+
+    if args.action != "run":
+        return
+
+    server.run()
 
 
 if __name__ == "__main__":
