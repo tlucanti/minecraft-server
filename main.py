@@ -6,7 +6,6 @@ import argparse
 import datetime
 import io
 import json
-import os
 import pathlib
 import shlex
 import subprocess
@@ -106,12 +105,12 @@ class Cmd:
         return stdout
 
     @classmethod
-    def cmd(cls, cmd: str | list, check=True) -> int:
+    def cmd(cls, cmd: str | list, check=True, cwd=None) -> int:
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
         cprint("green", f"> {' '.join(cmd)}")
 
-        proc = subprocess.run(cmd, text=True, check=check)
+        proc = subprocess.run(cmd, text=True, check=check, cwd=cwd)
         if check and proc.returncode != 0:
             FAIL(f'failed command "{cmd}"')
             raise subprocess.SubprocessError(f"command return code {proc.returncode}")
@@ -140,8 +139,8 @@ class Requirements:
 
     def download_prerequirements(self):
         cprint("yellow", "DOWNLOADING PREREQUIREMENTS")
-        Cmd.cmd("apt-get update")
-        Cmd.cmd("apt-get install -y openjdk-21-jdk-headless")
+        Cmd.cmd("sudo apt-get update")
+        Cmd.cmd("sudo apt-get install -y openjdk-21-jdk-headless")
         print()
 
     def list_versions(self):
@@ -220,20 +219,22 @@ class Server:
         print()
 
     def run(self):
-        os.chdir(f"{self.folder}/{DATA_FOLDER}")
-        server = f"../../../servers/{self.version}.jar"
+        cwd = f"{self.folder}/{DATA_FOLDER}"
+        server = pathlib.Path(f"servers/{self.version}.jar").resolve()
 
+        Cmd.cmd("whoami")
         Cmd.cmd(
             [
-                f"java",
-                f"-server",
-                f"XX:ParallelGCThreads={JAVA_THREADS}",
-                f"-Xms={JAVA_HEAP}",
-                f"-Xmx={JAVA_MAX_HEAP}",
-                f"-jar",
-                f'"{server}"',
-                f"nogui",
-            ]
+                "java",
+                "-server",
+                "-XX:+UseParallelGC",
+                f"-Xms{JAVA_HEAP}",
+                f"-Xmx{JAVA_MAX_HEAP}",
+                "-jar",
+                server,
+                "nogui",
+            ],
+            cwd=cwd,
         )
 
 
@@ -326,6 +327,7 @@ def main():
         return
 
     server.prepare()
+    server.run()
 
 
 if __name__ == "__main__":
