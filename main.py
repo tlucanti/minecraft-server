@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
+import datetime
+import json
+import pathlib
 import shlex
 import subprocess
-import json
-import argparse
-import pathlib
+import sys
 from typing import Any
 
 SERVERS_FOLDER = "servers"
@@ -157,6 +159,12 @@ class Server:
         Cmd.fwrite(f"{self.folder}/eula.txt", "eula=true")
         print()
 
+    def save(self):
+        tz = datetime.timezone(datetime.timedelta(hours=3))
+        message = f"{datetime.datetime.now(tz)} {self.name}"
+        Cmd.cmd(f"git -C {WORLDS_FOLDER} add --all")
+        Cmd.cmd(f'git -C {WORLDS_FOLDER} commit --allow-empty -m "{message}"')
+
 
 def create_server(args: Any) -> Server:
     cprint("yellow", f"CREATING SERVER {args.name}")
@@ -176,8 +184,10 @@ def create_server(args: Any) -> Server:
     return Server(args.name, args.version)
 
 
-def find_server(args: Any) -> Server:
-    cprint("yellow", f"FINDING SERVER {args.name}")
+def find_server(args: Any, announce=True) -> Server:
+    if announce:
+        cprint("yellow", f"FINDING SERVER {args.name}")
+
     folder = f"{WORLDS_FOLDER}/{args.name}"
     if not pathlib.Path(folder).exists():
         cprint("bred", f"server {args.name} does not exists")
@@ -185,10 +195,18 @@ def find_server(args: Any) -> Server:
 
     version = Cmd.fread(f"{folder}/VERSION")
 
-    cprint("green", f'[ OK ]: found server "{args.name}" with version "{args.version}"')
-    print()
+    cprint("green", f'[ OK ]: found server "{args.name}" with version "{version}"')
+    if announce:
+        print()
 
     return Server(args.name, version)
+
+
+def save_server(args: Any):
+    cprint("yellow", f'SAVING SERVER "{args.name}"')
+    server = find_server(args, announce=False)
+    server.save()
+    sys.exit(0)
 
 
 def main():
@@ -202,7 +220,11 @@ def main():
 
     run = subparsers.add_parser("run", help="run existing server")
     run.add_argument("name")
-    run.set_defaults(action=find_server)
+    run.set_defaults(func=find_server)
+
+    save = subparsers.add_parser("save", help="save existing server to repository")
+    save.add_argument("name")
+    save.set_defaults(func=save_server)
 
     parser.add_argument("--list-versions", action="store_true")
     parser.add_argument("--update-versions", action="store_true")
