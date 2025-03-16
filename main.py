@@ -200,7 +200,8 @@ class Server:
             return "\n".join(f"{key}={value}" for key, value in config.items())
 
         cprint("yellow", "PREPARE SERVER TO RUN")
-        Cmd.fwrite(f"{self.folder}/eula.txt", "eula=true")
+        INFO("accepting eula")
+        Cmd.fwrite(f"{self.folder}/{DATA_FOLDER}/eula.txt", "eula=true")
 
         local_config_fname = f"{self.folder}/config.json"
         server_properties_fname = f"{self.folder}/{DATA_FOLDER}/server.properties"
@@ -219,10 +220,11 @@ class Server:
         print()
 
     def run(self):
-        cwd = f"{self.folder}/{DATA_FOLDER}"
-        server = pathlib.Path(f"servers/{self.version}.jar").resolve()
+        cprint("yellow", "RUNNING SERVER")
 
-        Cmd.cmd("whoami")
+        cwd = f"{self.folder}/{DATA_FOLDER}"
+        server = str(pathlib.Path(f"servers/{self.version}.jar").absolute())
+
         Cmd.cmd(
             [
                 "java",
