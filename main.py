@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import io
 import json
+import os
 import pathlib
 import shlex
 import subprocess
-import os
+import yaml
 from typing import NoReturn
 
 SERVERS_FOLDER = "servers"
 WORLDS_FOLDER = "worlds"
+DATA_FOLDER = "data"
+
+JAVA_THREADS = 1
+JAVA_HEAP = "256M"
+JAVA_MAX_HEAP = "1G"
 
 
 def cprint(color, *args, **kwargs):
@@ -81,6 +88,14 @@ class Cmd:
             f.write(text)
 
     @classmethod
+    def jload(cls, text: str) -> dict:
+        return yaml.safe_load(io.StringIO(text))
+
+    @classmethod
+    def jdump(cls, data: dict, indent=None) -> str:
+        return json.dumps(data, indent=indent)
+
+    @classmethod
     def run(cls, cmd: str | list, strip=True) -> str:
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
@@ -113,7 +128,7 @@ class Requirements:
                 if server.strip().lower() == "not found":
                     continue
                 d[version.strip()] = server.strip()
-            return json.dumps(d, indent=4)
+            return Cmd.jdump(d, indent=4)
 
         cprint("yellow", "UPDATING VERSIONS")
         url = "https://gist.github.com/77a982a7503669c3e1acb0a0cf6127e9.git"
@@ -131,7 +146,7 @@ class Requirements:
 
     def list_versions(self):
         cprint("yellow", "SUPPORTED VERSIONS")
-        j = json.loads(Cmd.fread("versions.json"))
+        j = yaml.load(Cmd.fread("versions.json"))
         print("\n".join(j.keys()))
 
     def download_server(self, version: str) -> str:
@@ -147,7 +162,7 @@ class Requirements:
         if not pathlib.Path("versions.json").exists():
             FAIL(f"versions.json not found. rerun with --update-versions")
             raise RuntimeError()
-        versions = json.loads(Cmd.fread("versions.json"))
+        versions = Cmd.jload(Cmd.fread("versions.json"))
 
         url = versions.get(version)
         if url is None:
@@ -172,11 +187,6 @@ class Server:
         self.version = version
         self.folder = f"{WORLDS_FOLDER}/{name}"
 
-    def accept_eula(self):
-        cprint("yellow", "ACCEPTING EULA")
-        Cmd.fwrite(f"{self.folder}/eula.txt", "eula=true")
-        print()
-
     def save(self):
         tz = datetime.timezone(datetime.timedelta(hours=3))
         message = f"{datetime.datetime.now(tz)} {self.name}"
@@ -186,8 +196,45 @@ class Server:
         Cmd.cmd(f"git -C {WORLDS_FOLDER} add --all")
         Cmd.cmd(f'git -C {WORLDS_FOLDER} commit --allow-empty -m "{message}"')
 
+    def prepare(self):
+        def convert_config(config: dict[str, str]) -> str:
+            return "\n".join(f"{key}={value}" for key, value in config.items())
+
+        cprint("yellow", "PREPARE SERVER TO RUN")
+        Cmd.fwrite(f"{self.folder}/eula.txt", "eula=true")
+
+        local_config_fname = f"{self.folder}/config.json"
+        server_properties_fname = f"{self.folder}/{DATA_FOLDER}/server.properties"
+
+        base_config = Cmd.jload(Cmd.fread("server.properties.json"))
+        global_config = Cmd.jload(Cmd.fread("config.json"))
+        local_config = {}
+        if pathlib.Path(local_config_fname).exists():
+            local_config = Cmd.jload(Cmd.fread(local_config_fname))
+        local_config |= {"level-name": self.name}
+
+        # global config overrides base properties
+        # local config overrides global config and base config
+        config = base_config | global_config | local_config
+        Cmd.fwrite(server_properties_fname, convert_config(config))
+        print()
+
     def run(self):
-        os.chdir(self.folder)
+        os.chdir(f"{self.folder}/{DATA_FOLDER}")
+        server = f"../../../servers/{self.version}.jar"
+
+        Cmd.cmd(
+            [
+                f"java",
+                f"-server",
+                f"XX:ParallelGCThreads={JAVA_THREADS}",
+                f"-Xms={JAVA_HEAP}",
+                f"-Xmx={JAVA_MAX_HEAP}",
+                f"-jar",
+                f'"{server}"',
+                f"nogui",
+            ]
+        )
 
 
 def create_server(name: str, version: str) -> Server:
@@ -197,7 +244,7 @@ def create_server(name: str, version: str) -> Server:
         FAIL(f'server "{name}" already exists')
         raise RuntimeError()
 
-    Cmd.cmd(f"mkdir -p {folder}")
+    Cmd.cmd(f"mkdir -p {folder}/{DATA_FOLDER}")
     Cmd.fwrite(f"{folder}/VERSION", version)
 
     OK(f'created server "{name}" with version "{version}"')
@@ -274,12 +321,11 @@ def main():
         ABORT(f"invalid action: {args.action}")
 
     req.download_server(server.version)
-    server.accept_eula()
 
     if args.action != "run":
         return
 
-    server.run()
+    server.prepare()
 
 
 if __name__ == "__main__":
