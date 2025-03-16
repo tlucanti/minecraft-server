@@ -17,7 +17,6 @@ WORLDS_FOLDER = "worlds"
 
 def cprint(color, *args, **kwargs):
     color_table = {
-        "black": "\033[0;30m",
         "red": "\033[0;31m",
         "green": "\033[0;32m",
         "yellow": "\033[0;33m",
@@ -37,6 +36,18 @@ def cprint(color, *args, **kwargs):
     print(color_table[color], end="")
     print(*args, **kwargs)
     print(color_table["reset"], end="", flush=True)
+
+
+def OK(*args, **kwargs):
+    cprint("bgreen", "[ OK ]:", *args, **kwargs)
+
+
+def WARN(*args, **kwargs):
+    cprint("byellow", "[WARN]:", *args, **kwargs)
+
+
+def FAIL(*args, **kwargs):
+    cprint("bred", "[FAIL]:", *args, **kwargs)
 
 
 class Cmd:
@@ -78,7 +89,7 @@ class Cmd:
 
         proc = subprocess.run(cmd, text=True, check=check)
         if check and proc.returncode != 0:
-            cprint("bred", f'[FAIL]:failed command "{cmd}"')
+            FAIL(f'failed command "{cmd}"')
             raise subprocess.SubprocessError(f"command return code {proc.returncode}")
         else:
             return proc.returncode
@@ -120,27 +131,25 @@ class Requirements:
 
         fname = f"{SERVERS_FOLDER}/{version}.jar"
         if pathlib.Path(fname).exists():
-            cprint("bgreen", f'[ OK ]: existing server: "{fname}"')
+            OK(f'existing server: "{fname}"')
             print()
             return fname
 
         if not pathlib.Path("versions.json").exists():
-            cprint(
-                "bred", f"[FAIL]: versions.json not found. rerun with --update-versions"
-            )
+            FAIL(f"versions.json not found. rerun with --update-versions")
             raise RuntimeError()
         versions = json.loads(Cmd.fread("versions.json"))
 
         url = versions.get(version)
         if url is None:
-            cprint("bred", f'[FAIL]: version "{version}" not found')
+            FAIL(f'version "{version}" not found')
             raise RuntimeError()
 
-        cprint("bblue", f'[INFO]: downloading server "{fname}"')
-        cprint("bblue", f"[INFO]: url: {url}")
+        INFO(f'downloading server "{fname}"')
+        INFO(f"url: {url}")
 
         if Cmd.cmd(f'wget --verbose "{url}" -O "{fname}"', check=False):
-            cprint("bred", f"[FAIL]: FAILED TO DOWNLOAD SERVER")
+            FAIL("FAILED TO DOWNLOAD SERVER")
             Cmd.cmd(f'rm -f "{fname}"')
             raise RuntimeError()
 
@@ -162,6 +171,9 @@ class Server:
     def save(self):
         tz = datetime.timezone(datetime.timedelta(hours=3))
         message = f"{datetime.datetime.now(tz)} {self.name}"
+        if not pathlib.Path(f"{WORLDS_FOLDER}/.git").exists():
+            Cmd.cmd(f"git -C {WORLDS_FOLDER} init")
+            Cmd.cmd(f"git -C {WORLDS_FOLDER} commit --allow-empty -m 'initial commit'")
         Cmd.cmd(f"git -C {WORLDS_FOLDER} add --all")
         Cmd.cmd(f'git -C {WORLDS_FOLDER} commit --allow-empty -m "{message}"')
 
@@ -170,15 +182,13 @@ def create_server(args: Any) -> Server:
     cprint("yellow", f"CREATING SERVER {args.name}")
     folder = f"{WORLDS_FOLDER}/{args.name}"
     if pathlib.Path(folder).exists():
-        cprint("bred", f'[FAIL]: "server {args.name} already exists')
+        FAIL(f'server "{args.name}" already exists')
         raise RuntimeError()
 
     Cmd.cmd(f"mkdir -p {folder}")
     Cmd.fwrite(f"{folder}/VERSION", args.version)
 
-    cprint(
-        "green", f'[ OK ]: created server "{args.name}" with version "{args.version}"'
-    )
+    OK(f'created server "{args.name}" with version "{args.version}"')
     print()
 
     return Server(args.name, args.version)
@@ -195,7 +205,7 @@ def find_server(args: Any, announce=True) -> Server:
 
     version = Cmd.fread(f"{folder}/VERSION")
 
-    cprint("green", f'[ OK ]: found server "{args.name}" with version "{version}"')
+    OK(f'found server "{args.name}" with version "{version}"')
     if announce:
         print()
 
