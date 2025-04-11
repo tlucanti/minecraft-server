@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import abstractmethod, ABCMeta
 import argparse
 import datetime
 import io
@@ -11,6 +12,7 @@ import shlex
 import subprocess
 import yaml
 from typing import NoReturn
+from collections import OrderedDict
 
 SERVERS_FOLDER = "servers"
 WORLDS_FOLDER = "worlds"
@@ -118,34 +120,59 @@ class Cmd:
             return proc.returncode
 
 
-class Requirements:
-    def update_versions(self):
-        def convert():
-            d = {}
-            for line in Cmd.freadlines("gist/minecraft-server-jar-downloads.md")[2:]:
-                _, version, server, _, _ = line.split("|")
-                if server.strip().lower() == "not found":
-                    continue
-                d[version.strip()] = server.strip()
-            return Cmd.jdump(d, indent=4)
-
-        cprint("yellow", "UPDATING VERSIONS")
-        url = "https://gist.github.com/77a982a7503669c3e1acb0a0cf6127e9.git"
-        Cmd.cmd("rm -rf gist")
-        Cmd.cmd(f"git clone --depth=1 --progress {url} gist")
-        Cmd.fwrite("versions.json", convert())
-        Cmd.cmd("rm -rf gist")
-        print()
-
+class IRequirements(metaclass=ABCMeta):
     def download_prerequirements(self):
         cprint("yellow", "DOWNLOADING PREREQUIREMENTS")
         Cmd.cmd("sudo apt-get update")
         Cmd.cmd("sudo apt-get install -y openjdk-21-jdk-headless")
         print()
 
+    @abstractmethod
+    def update_versions(self):
+        pass
+
+    @abstractmethod
     def list_versions(self):
-        cprint("yellow", "SUPPORTED VERSIONS")
-        j = yaml.load(Cmd.fread("versions.json"))
+        pass
+
+    @abstractmethod
+    def download_server(self, version: str) -> str:
+        pass
+
+    def _filter_version(self, version: str) -> bool:
+        split = version.split(".")
+        if len(split) not in (2, 3):
+            return True
+        return not all(v.isdigit() for v in split)
+
+
+class VanillaRequirements(IRequirements):
+    def update_versions(self):
+        def convert() -> str:
+            d = OrderedDict()
+            for line in Cmd.freadlines("gist/minecraft-server-jar-downloads.md")[2:]:
+                _, version, url, _, _ = line.split("|")
+                url = url.strip()
+                version = version.strip()
+                if url.lower() == "not found":
+                    continue
+                if self._filter_version(version):
+                    continue
+                d[version] = url
+
+            return Cmd.jdump(d, indent=4)
+
+        cprint("yellow", "UPDATING VANILLA VERSIONS")
+        url = "https://gist.github.com/77a982a7503669c3e1acb0a0cf6127e9.git"
+        Cmd.cmd("rm -rf gist")
+        Cmd.cmd(f"git clone --depth=1 --progress {url} gist")
+        Cmd.fwrite("versions.vanilla.json", convert())
+        Cmd.cmd("rm -rf gist")
+        print()
+
+    def list_versions(self):
+        cprint("yellow", "SUPPORTED VANILLA VERSIONS")
+        j = Cmd.jload(Cmd.fread("versions.vanilla.json"))
         print("\n".join(j.keys()))
 
     def download_server(self, version: str) -> str:
@@ -180,13 +207,51 @@ class Requirements:
         return fname
 
 
+class ForgeRequirements(IRequirements):
+    def update_versions(self):
+        cprint("yellow", "UPDATING FORGE VERSIONS")
+        url = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+        versions_raw = Cmd.run(f"curl {url}")
+        versions = Cmd.jload(versions_raw)
+
+        filtered = OrderedDict()
+        for version in reversed(versions["promos"]):
+            ver, _ = version.split("-")
+            if self._filter_version(ver):
+                continue
+            if f"{version}-recommended" in versions:
+                filtered[version] = f"{version}-recommended"
+            else:
+                filtered[version] = f"{version}-latest"
+
+        Cmd.fwrite("versions.forge.json", Cmd.jdump(filtered))
+        print()
+
+    def list_versions(self):
+        cprint("yellow", "SUPPORTED FORGE VERSIONS")
+        j = Cmd.jload(Cmd.fread("versions.forge.json"))
+        print("\n".join(j.keys()))
+
+    def download_server(self, version: str) -> str:
+        return ""
+
+
+def Requirements(launcher: str) -> IRequirements:
+    if launcher == "vanilla":
+        return VanillaRequirements()
+    elif launcher == "forge":
+        return ForgeRequirements()
+    else:
+        ABORT(f"invalid launcher: {launcher}")
+
+
 class Server:
     def __init__(self, name: str, version: str):
         self.name = name
         self.version = version
         self.folder = f"{WORLDS_FOLDER}/{name}"
 
-    def save(self):
+   def save(self):
         tz = datetime.timezone(datetime.timedelta(hours=3))
         message = f"{datetime.datetime.now(tz)} {self.name}"
         if not pathlib.Path(f"{WORLDS_FOLDER}/.git").exists():
@@ -297,14 +362,14 @@ def main():
     save.add_argument("name")
     save.set_defaults(action="save")
 
+    parser.add_argument("--launcher", choices=["vanilla", "forge"], required=True)
     parser.add_argument("--list-versions", action="store_true")
     parser.add_argument("--update-versions", action="store_true")
     parser.add_argument("--prerequirements", action="store_true")
 
     args = parser.parse_args()
-    print(args)
 
-    req = Requirements()
+    req = Requirements(args.launcher)
     if args.update_versions:
         req.update_versions()
     if args.prerequirements:
