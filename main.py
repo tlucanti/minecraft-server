@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from abc import abstractmethod, ABCMeta
 import argparse
 import datetime
 import io
 import json
+import os
 import pathlib
 import shlex
 import subprocess
 import yaml
-from typing import NoReturn
+import time
+from abc import abstractmethod, ABCMeta
 from collections import OrderedDict
+from typing import NoReturn
 
 SERVERS_FOLDER = "cores"
 WORLDS_FOLDER = "worlds"
@@ -26,7 +28,10 @@ ACTION_CREATE = "CREATE"
 ACTION_DELETE = "DELETE"
 ACTION_RUN = "RUN"
 ACTION_SAVE = "SAVE"
+ACTION_STOP = "STOP"
+ACTION_KILL = "KILL"
 ACTION_LIST = "LIST"
+ACTION_LIST_RUNNING = "LIST_RUNNING"
 ACTION_UPDATE_VERSIONS = "UPDATE_VERSIONS"
 ACTION_LIST_VERSIONS = "LIST_VERSIONS"
 ACTION_PREREQUIREMENTS = "PREREQUIREMENTS"
@@ -98,6 +103,11 @@ class Cmd:
     @classmethod
     def fwrite(cls, fname: str, text: str):
         with open(fname, "w") as f:
+            f.write(text)
+
+    @classmethod
+    def fappend(cls, fname: str, text: str):
+        with open(fname, "a") as f:
             f.write(text)
 
     @classmethod
@@ -195,30 +205,31 @@ class VanillaRequirements(IRequirements):
             print(v)
 
     def download_server(self, version: str) -> str:
-        cprint("yellow", "GETTING SERVER JAR")
-        Cmd.cmd(f"mkdir -p {SERVERS_FOLDER}")
+        cprint("yellow", "GETTING VANILLA SERVER JAR")
+        folder = f"{SERVERS_FOLDER}/{TYPE_VANILLA}"
+        Cmd.cmd(f"mkdir -p {folder}")
 
-        fname = f"{SERVERS_FOLDER}/{version}.jar"
+        fname = f"{folder}/{version}.jar"
         if pathlib.Path(fname).exists():
             OK(f'existing server: "{fname}"')
             print()
             return fname
 
-        if not pathlib.Path("versions.json").exists():
-            FAIL(f"versions.json not found. rerun with --update-versions")
+        if not pathlib.Path(f"versions.{TYPE_VANILLA}.json").exists():
+            FAIL(f"versions.{TYPE_VANILLA}.json not found. run update-versions command")
             raise RuntimeError()
-        versions = Cmd.jload(Cmd.fread("versions.json"))
+        versions = Cmd.jload(Cmd.fread(f"versions.{TYPE_VANILLA}.json"))
 
         url = versions.get(version)
         if url is None:
-            FAIL(f'version "{version}" not found')
+            FAIL(f'version "{version}" not found. run list-versions command')
             raise RuntimeError()
 
-        INFO(f'downloading server "{fname}"')
+        INFO(f'downloading {TYPE_VANILLA} server "{fname}"')
         INFO(f"url: {url}")
 
         if Cmd.cmd(f'wget --verbose "{url}" -O "{fname}"', check=False):
-            FAIL("FAILED TO DOWNLOAD SERVER")
+            FAIL("FAILED TO DOWNLOAD VANILLA SERVER")
             Cmd.cmd(f'rm -f "{fname}"')
             raise RuntimeError()
 
@@ -264,14 +275,31 @@ def Requirements(launcher: str) -> IRequirements:
         ABORT(f"invalid launcher: {launcher}")
 
 
-class IServer:
+class IServer(metaclass=ABCMeta):
+    def __init__(self):
+        self.name = None
+        self.version = None
+        self.launcher = None
+        self.folder = None
+
+    @abstractmethod
     def save(self):
         pass
 
+    @abstractmethod
     def prepare(self):
         pass
 
-    def run(self):
+    @abstractmethod
+    def run(self, log_to_stdout: bool):
+        pass
+
+    @abstractmethod
+    def stop(self, kill: bool = False):
+        pass
+
+    @abstractmethod
+    def is_running(self) -> bool:
         pass
 
 
@@ -279,6 +307,7 @@ class VanillaServer(IServer):
     def __init__(self, name: str, version: str):
         self.name = name
         self.version = version
+        self.launcher = TYPE_VANILLA
         self.folder = f"{WORLDS_FOLDER}/{name}"
 
     def save(self):
@@ -314,13 +343,54 @@ class VanillaServer(IServer):
         Cmd.fwrite(server_properties_fname, convert_config(config))
         print()
 
-    def run(self):
-        cprint("yellow", "RUNNING SERVER")
+    def run(self, log_to_stdout=False):
+        cprint("yellow", "PREPARE VANILLA ENVIROMENT")
 
-        cwd = f"{self.folder}/{DATA_FOLDER}"
-        server = str(pathlib.Path(f"servers/{self.version}.jar").absolute())
+        if self.is_running():
+            FAIL(f'server "{self.name}" already running')
+            raise RuntimeError()
 
-        Cmd.cmd(
+        stdin_fname = f"{self.folder}/stdin.fifo"
+        stdout_fname = f"{self.folder}/stdout.log"
+        history_fname = f"{self.folder}/history.txt"
+        core_fname = str(
+            pathlib.Path(
+                f"{SERVERS_FOLDER}/{TYPE_VANILLA}/{self.version}.jar"
+            ).absolute()
+        )
+        FAIL(self.version)
+        FAIL(core_fname)
+
+        Cmd.cmd(f"rm -f {stdin_fname}")
+        Cmd.cmd(f"mkfifo {stdin_fname}")
+        Cmd.cmd(f"touch {history_fname}")
+
+        print()
+        cprint("yellow", "RUNNING COMMAND KEEPER PROCESS")
+
+        stdin_fd = os.open(stdin_fname, os.O_RDWR | os.O_NONBLOCK)
+        stdin_pipe = os.fdopen(stdin_fd, "r")
+
+        stdin_keeper = subprocess.Popen(
+            ["tail", "-n0", "-f", history_fname],
+            stdout=open(stdin_fname, "w"),
+            text=True,
+            start_new_session=True,
+            close_fds=True,
+        )
+        Cmd.fwrite(f"{self.folder}/KEEPER_PID", str(stdin_keeper.pid))
+        OK(f"command keeper started with pid {stdin_keeper.pid}")
+
+        print()
+        cprint("yellow", "RUNNING SERVER PROCESS")
+        if log_to_stdout:
+            stdout = None
+            stderr = None
+        else:
+            stdout = open(stdout_fname, "w")
+            stderr = subprocess.STDOUT
+        FAIL(core_fname)
+        server_proc = subprocess.Popen(
             [
                 "java",
                 "-server",
@@ -328,11 +398,64 @@ class VanillaServer(IServer):
                 f"-Xms{JAVA_HEAP}",
                 f"-Xmx{JAVA_MAX_HEAP}",
                 "-jar",
-                server,
+                core_fname,
                 "nogui",
             ],
-            cwd=cwd,
+            cwd=f"{self.folder}/{DATA_FOLDER}",
+            stdin=stdin_pipe,
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+            start_new_session=True,
+            close_fds=True,
         )
+        Cmd.fwrite(f"{self.folder}/PID", str(server_proc.pid))
+        OK(f"server started with pid {stdin_keeper.pid}")
+
+    def stop(self, kill=False):
+        server_exists = pathlib.Path(f"{self.folder}/PID").exists()
+        keeper_exists = pathlib.Path(f"{self.folder}/KEEPER_PID").exists()
+
+        if not kill and not self.is_running():
+            FAIL(f"server {self.name} is not running")
+            raise RuntimeError()
+
+        if server_exists:
+            pid = Cmd.fread(f"{self.folder}/PID")
+            if kill:
+                cprint("red", "KILLING SERVER")
+                INFO(f"found server process with pid {pid}")
+                Cmd.cmd(f"kill {pid}", check=False)
+            else:
+                cprint("yellow", "STOPPING SERVER")
+                INFO(f"found server process with pid {pid}")
+                self.send_cmd("/stop")
+            Cmd.cmd(f"rm {self.folder}/PID")
+        else:
+            WARN("server process not running")
+
+        time.sleep(5)
+        if keeper_exists:
+            if kill:
+                cprint("red", "KILLING KEEPER PROCESS")
+            else:
+                cprint("yellow", "STOPPING KEEPER PROCESS")
+            print()
+            keeper_pid = Cmd.fread(f"{self.folder}/KEEPER_PID")
+            INFO(f"found keeper process with pid {keeper_pid}")
+            Cmd.cmd(f"kill {keeper_pid}", check=False)
+            Cmd.cmd(f"rm {self.folder}/KEEPER_PID")
+        else:
+            WARN("keeper process not running")
+
+    def send_cmd(self, cmd: str):
+        INFO(f'sending command "{cmd}" to server {self.name}')
+        Cmd.fappend(f"{self.folder}/history.txt", cmd)
+
+    def is_running(self):
+        server_exists = pathlib.Path(f"{self.folder}/PID").exists()
+        keeper_exists = pathlib.Path(f"{self.folder}/KEEPER_PID").exists()
+        return server_exists or keeper_exists
 
 
 def ForgeServer(IServer):
@@ -341,6 +464,10 @@ def ForgeServer(IServer):
 
 
 class ServerCreator:
+    def iter_servers(self):
+        for server in pathlib.Path(WORLDS_FOLDER).iterdir():
+            yield self.get(server.name)
+
     def create_server(self, launcher: str, name: str, version: str) -> IServer:
         cprint("yellow", f"CREATING {launcher.upper()} SERVER {name}")
         folder = f"{WORLDS_FOLDER}/{name}"
@@ -355,6 +482,17 @@ class ServerCreator:
         OK(f'created {launcher} server "{name}" with version "{version}"')
         print()
 
+        return self.get(name)
+
+    def get(self, name: str) -> IServer:
+        folder = f"{WORLDS_FOLDER}/{name}"
+        if not pathlib.Path(folder).exists():
+            FAIL(f"server {name} does not exists")
+            raise RuntimeError()
+
+        version = Cmd.fread(f"{folder}/VERSION")
+        launcher = Cmd.fread(f"{folder}/TYPE")
+
         if launcher == TYPE_VANILLA:
             return VanillaServer(name, version)
         elif launcher == TYPE_FORGE:
@@ -364,43 +502,43 @@ class ServerCreator:
 
     def find_server(self, name: str, announce=True) -> IServer:
         if announce:
-            cprint("yellow", f"FINDING SERVER {name}")
+            cprint("yellow", f'FINDING SERVER "{name}"')
 
-        folder = f"{WORLDS_FOLDER}/{name}"
-        if not pathlib.Path(folder).exists():
-            cprint("bred", f"server {name} does not exists")
-            raise RuntimeError()
-
-        version = Cmd.fread(f"{folder}/VERSION")
-        launcher = Cmd.fread(f"{folder}/TYPE")
-
-        OK(f'found {launcher} server "{name}" with version "{version}"')
-        if announce:
-            print()
-
-        if launcher == TYPE_VANILLA:
-            return VanillaServer(name, version)
-        elif launcher == TYPE_FORGE:
-            return ForgeServer(name, version)
-        else:
-            ABORT(f"invalid launcher: {launcher}")
+        server = self.get(name)
+        OK(
+            f'found {server.launcher} server "{server.name}" with version "{server.version}"'
+        )
+        print()
+        return server
 
     def list_servers(self):
-        for server in pathlib.Path(WORLDS_FOLDER).iterdir():
-            name = server.name
-            version = Cmd.fread(f"{server}/VERSION")
-            launcher = Cmd.fread(f"{server}/TYPE")
-            print(f"{name} {launcher} {version}")
+        for server in self.iter_servers():
+            if server.is_running():
+                running = "server running"
+            else:
+                running = "server not running"
+            print(f"{server.name} {server.launcher} {server.version} ({running})")
+
+    def list_running_servers(self):
+        pass
 
     def save_server(self, name: str):
         cprint("yellow", f'SAVING SERVER "{name}"')
         server = self.find_server(name, announce=False)
         server.save()
 
-    def delete_server(self, name: str):
+    def delete_server(self, name: str, force: bool = False):
         cprint("yellow", f'DELETING SERVER "{name}"')
         server = self.find_server(name, announce=False)
+        if server.is_running():
+            if force:
+                WARN("deleting running server")
+                server.stop(kill=True)
+            else:
+                FAIL("cannot delete running server. stop or kill it first")
+                raise RuntimeError()
         Cmd.cmd(f"rm -rf {server.folder}")
+        OK(f"deleted server {name}")
 
 
 def main():
@@ -422,10 +560,12 @@ def main():
     create.set_defaults(action=ACTION_CREATE)
 
     delete = subparsers.add_parser("delete", help="delete server")
+    delete.add_argument("--force", action="store_true")
     add_name_option(delete)
     delete.set_defaults(action=ACTION_DELETE)
 
     run = subparsers.add_parser("run", help="run existing server")
+    run.add_argument("--log-to-stdout", action="store_true")
     add_name_option(run)
     run.set_defaults(action=ACTION_RUN)
 
@@ -433,8 +573,19 @@ def main():
     add_name_option(save)
     save.set_defaults(action=ACTION_SAVE)
 
+    stop = subparsers.add_parser("stop", help="stop running server")
+    add_name_option(stop)
+    stop.set_defaults(action=ACTION_STOP)
+
+    kill = subparsers.add_parser("kill", help="kill running server without saving")
+    add_name_option(kill)
+    kill.set_defaults(action=ACTION_KILL)
+
     list_servers = subparsers.add_parser("list", help="list existing serveers")
     list_servers.set_defaults(action=ACTION_LIST)
+
+    list_running = subparsers.add_parser("ps", help="list running servers")
+    list_running.set_defaults(action=ACTION_LIST_RUNNING)
 
     update_versions = subparsers.add_parser(
         "update-versions", help="update list of avaliable versions"
@@ -467,18 +618,29 @@ def main():
         server.prepare()
 
     elif args.action == ACTION_DELETE:
-        creator.delete_server(args.name)
+        creator.delete_server(args.name, args.force)
 
     elif args.action == ACTION_RUN:
         server = creator.find_server(args.name)
-        server.run()
+        server.run(log_to_stdout=args.log_to_stdout)
 
     elif args.action == ACTION_SAVE:
         server = creator.find_server(args.name)
         server.save()
 
+    elif args.action == ACTION_STOP:
+        server = creator.find_server(args.name)
+        server.stop()
+
+    elif args.action == ACTION_KILL:
+        server = creator.find_server(args.name)
+        server.stop(kill=True)
+
     elif args.action == ACTION_LIST:
         creator.list_servers()
+
+    elif args.action == ACTION_LIST_RUNNING:
+        creator.list_running_servers()
 
     elif args.action == ACTION_UPDATE_VERSIONS:
         req = Requirements(args.launcher)
