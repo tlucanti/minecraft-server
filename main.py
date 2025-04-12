@@ -14,13 +14,25 @@ import yaml
 from typing import NoReturn
 from collections import OrderedDict
 
-SERVERS_FOLDER = "servers"
+SERVERS_FOLDER = "cores"
 WORLDS_FOLDER = "worlds"
 DATA_FOLDER = "data"
 
 JAVA_THREADS = 1
 JAVA_HEAP = "256M"
 JAVA_MAX_HEAP = "1G"
+
+ACTION_CREATE = "CREATE"
+ACTION_DELETE = "DELETE"
+ACTION_RUN = "RUN"
+ACTION_SAVE = "SAVE"
+ACTION_LIST = "LIST"
+ACTION_UPDATE_VERSIONS = "UPDATE_VERSIONS"
+ACTION_LIST_VERSIONS = "LIST_VERSIONS"
+ACTION_PREREQUIREMENTS = "PREREQUIREMENTS"
+
+TYPE_VANILLA = "vanilla"
+TYPE_FORGE = "forge"
 
 
 def cprint(color, *args, **kwargs):
@@ -132,7 +144,7 @@ class IRequirements(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def list_versions(self):
+    def list_versions(self, show_snapshots: bool):
         pass
 
     @abstractmethod
@@ -156,8 +168,6 @@ class VanillaRequirements(IRequirements):
                 version = version.strip()
                 if url.lower() == "not found":
                     continue
-                if self._filter_version(version):
-                    continue
                 d[version] = url
 
             return Cmd.jdump(d, indent=4)
@@ -170,10 +180,19 @@ class VanillaRequirements(IRequirements):
         Cmd.cmd("rm -rf gist")
         print()
 
-    def list_versions(self):
+    def list_versions(self, show_snapshots: bool):
         cprint("yellow", "SUPPORTED VANILLA VERSIONS")
-        j = Cmd.jload(Cmd.fread("versions.vanilla.json"))
-        print("\n".join(j.keys()))
+        try:
+            versions = Cmd.fread("versions.vanilla.json")
+        except FileNotFoundError:
+            FAIL("versions.vanilla.json not found. rerun with --update-versions")
+            raise
+
+        for line in reversed(versions.splitlines()[1:-1]):
+            v = line.split(":", maxsplit=1)[0].replace('"', "").strip()
+            if not show_snapshots and self._filter_version(v):
+                continue
+            print(v)
 
     def download_server(self, version: str) -> str:
         cprint("yellow", "GETTING SERVER JAR")
@@ -227,7 +246,7 @@ class ForgeRequirements(IRequirements):
         Cmd.fwrite("versions.forge.json", Cmd.jdump(filtered))
         print()
 
-    def list_versions(self):
+    def list_versions(self, show_snapshots: bool):
         cprint("yellow", "SUPPORTED FORGE VERSIONS")
         j = Cmd.jload(Cmd.fread("versions.forge.json"))
         print("\n".join(j.keys()))
@@ -237,21 +256,32 @@ class ForgeRequirements(IRequirements):
 
 
 def Requirements(launcher: str) -> IRequirements:
-    if launcher == "vanilla":
+    if launcher == TYPE_VANILLA:
         return VanillaRequirements()
-    elif launcher == "forge":
+    elif launcher == TYPE_FORGE:
         return ForgeRequirements()
     else:
         ABORT(f"invalid launcher: {launcher}")
 
 
-class Server:
+class IServer:
+    def save(self):
+        pass
+
+    def prepare(self):
+        pass
+
+    def run(self):
+        pass
+
+
+class VanillaServer(IServer):
     def __init__(self, name: str, version: str):
         self.name = name
         self.version = version
         self.folder = f"{WORLDS_FOLDER}/{name}"
 
-   def save(self):
+    def save(self):
         tz = datetime.timezone(datetime.timedelta(hours=3))
         message = f"{datetime.datetime.now(tz)} {self.name}"
         if not pathlib.Path(f"{WORLDS_FOLDER}/.git").exists():
@@ -305,96 +335,165 @@ class Server:
         )
 
 
-def create_server(name: str, version: str) -> Server:
-    cprint("yellow", f"CREATING SERVER {name}")
-    folder = f"{WORLDS_FOLDER}/{name}"
-    if pathlib.Path(folder).exists():
-        FAIL(f'server "{name}" already exists')
-        raise RuntimeError()
-
-    Cmd.cmd(f"mkdir -p {folder}/{DATA_FOLDER}")
-    Cmd.fwrite(f"{folder}/VERSION", version)
-
-    OK(f'created server "{name}" with version "{version}"')
-    print()
-
-    return Server(name, version)
+def ForgeServer(IServer):
+    def __init__(self, name: str, version: str):
+        pass
 
 
-def find_server(name: str, announce=True) -> Server:
-    if announce:
-        cprint("yellow", f"FINDING SERVER {name}")
+class ServerCreator:
+    def create_server(self, launcher: str, name: str, version: str) -> IServer:
+        cprint("yellow", f"CREATING {launcher.upper()} SERVER {name}")
+        folder = f"{WORLDS_FOLDER}/{name}"
+        if pathlib.Path(folder).exists():
+            FAIL(f'server "{name}" already exists')
+            raise RuntimeError()
 
-    folder = f"{WORLDS_FOLDER}/{name}"
-    if not pathlib.Path(folder).exists():
-        cprint("bred", f"server {name} does not exists")
-        raise RuntimeError()
+        Cmd.cmd(f"mkdir -p {folder}/{DATA_FOLDER}")
+        Cmd.fwrite(f"{folder}/VERSION", version)
+        Cmd.fwrite(f"{folder}/TYPE", launcher)
 
-    version = Cmd.fread(f"{folder}/VERSION")
-
-    OK(f'found server "{name}" with version "{version}"')
-    if announce:
+        OK(f'created {launcher} server "{name}" with version "{version}"')
         print()
 
-    return Server(name, version)
+        if launcher == TYPE_VANILLA:
+            return VanillaServer(name, version)
+        elif launcher == TYPE_FORGE:
+            return ForgeServer(name, version)
+        else:
+            ABORT(f"invalid launcher: {launcher}")
 
+    def find_server(self, name: str, announce=True) -> IServer:
+        if announce:
+            cprint("yellow", f"FINDING SERVER {name}")
 
-def save_server(name: str):
-    cprint("yellow", f'SAVING SERVER "{name}"')
-    server = find_server(name, announce=False)
-    server.save()
+        folder = f"{WORLDS_FOLDER}/{name}"
+        if not pathlib.Path(folder).exists():
+            cprint("bred", f"server {name} does not exists")
+            raise RuntimeError()
+
+        version = Cmd.fread(f"{folder}/VERSION")
+        launcher = Cmd.fread(f"{folder}/TYPE")
+
+        OK(f'found {launcher} server "{name}" with version "{version}"')
+        if announce:
+            print()
+
+        if launcher == TYPE_VANILLA:
+            return VanillaServer(name, version)
+        elif launcher == TYPE_FORGE:
+            return ForgeServer(name, version)
+        else:
+            ABORT(f"invalid launcher: {launcher}")
+
+    def list_servers(self):
+        for server in pathlib.Path(WORLDS_FOLDER).iterdir():
+            name = server.name
+            version = Cmd.fread(f"{server}/VERSION")
+            launcher = Cmd.fread(f"{server}/TYPE")
+            print(f"{name} {launcher} {version}")
+
+    def save_server(self, name: str):
+        cprint("yellow", f'SAVING SERVER "{name}"')
+        server = self.find_server(name, announce=False)
+        server.save()
+
+    def delete_server(self, name: str):
+        cprint("yellow", f'DELETING SERVER "{name}"')
+        server = self.find_server(name, announce=False)
+        Cmd.cmd(f"rm -rf {server.folder}")
 
 
 def main():
+    def add_name_option(subparser):
+        subparser.add_argument("--name", required=True)
+
+    def add_launcher_option(subparser):
+        subparser.add_argument(
+            "--launcher", choices=["vanilla", "forge"], required=True
+        )
+
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers()
+    subparsers = parser.add_subparsers(required=True)
 
     create = subparsers.add_parser("create", help="create new server")
-    create.add_argument("name")
-    create.add_argument("version")
-    create.set_defaults(action="create")
+    create.add_argument("--version", required=True)
+    add_name_option(create)
+    add_launcher_option(create)
+    create.set_defaults(action=ACTION_CREATE)
+
+    delete = subparsers.add_parser("delete", help="delete server")
+    add_name_option(delete)
+    delete.set_defaults(action=ACTION_DELETE)
 
     run = subparsers.add_parser("run", help="run existing server")
-    run.add_argument("name")
-    run.set_defaults(action="run")
+    add_name_option(run)
+    run.set_defaults(action=ACTION_RUN)
 
     save = subparsers.add_parser("save", help="save existing server to repository")
-    save.add_argument("name")
-    save.set_defaults(action="save")
+    add_name_option(save)
+    save.set_defaults(action=ACTION_SAVE)
 
-    parser.add_argument("--launcher", choices=["vanilla", "forge"], required=True)
-    parser.add_argument("--list-versions", action="store_true")
-    parser.add_argument("--update-versions", action="store_true")
-    parser.add_argument("--prerequirements", action="store_true")
+    list_servers = subparsers.add_parser("list", help="list existing serveers")
+    list_servers.set_defaults(action=ACTION_LIST)
+
+    update_versions = subparsers.add_parser(
+        "update-versions", help="update list of avaliable versions"
+    )
+    add_launcher_option(update_versions)
+    update_versions.set_defaults(action=ACTION_UPDATE_VERSIONS)
+
+    list_versions = subparsers.add_parser(
+        "list-versions", help="list avaliable versions"
+    )
+    list_versions.add_argument(
+        "--show-snapshots", action="store_true", help="also show snapshot versions"
+    )
+    add_launcher_option(list_versions)
+    list_versions.set_defaults(action=ACTION_LIST_VERSIONS)
+
+    prerequirements = subparsers.add_parser(
+        "prerequirements", help="install prerequirements"
+    )
+    prerequirements.set_defaults(action=ACTION_PREREQUIREMENTS)
 
     args = parser.parse_args()
 
-    req = Requirements(args.launcher)
-    if args.update_versions:
-        req.update_versions()
-    if args.prerequirements:
-        req.download_prerequirements()
-    if args.list_versions:
-        req.list_versions()
-        return
+    creator = ServerCreator()
 
-    if args.action == "create":
-        server = create_server(args.name, args.version)
-    elif args.action == "save":
-        save_server(args.name)
-        return
-    elif args.action == "run":
-        server = find_server(args.name)
+    if args.action == ACTION_CREATE:
+        req = Requirements(args.launcher)
+        server = creator.create_server(args.launcher, args.name, args.version)
+        req.download_server(server.version)
+        server.prepare()
+
+    elif args.action == ACTION_DELETE:
+        creator.delete_server(args.name)
+
+    elif args.action == ACTION_RUN:
+        server = creator.find_server(args.name)
+        server.run()
+
+    elif args.action == ACTION_SAVE:
+        server = creator.find_server(args.name)
+        server.save()
+
+    elif args.action == ACTION_LIST:
+        creator.list_servers()
+
+    elif args.action == ACTION_UPDATE_VERSIONS:
+        req = Requirements(args.launcher)
+        req.update_versions()
+
+    elif args.action == ACTION_LIST_VERSIONS:
+        req = Requirements(args.launcher)
+        req.list_versions(args.show_snapshots)
+
+    elif args.action == ACTION_PREREQUIREMENTS:
+        req = Requirements(args.launcher)
+        req.download_prerequirements()
+
     else:
         ABORT(f"invalid action: {args.action}")
-
-    req.download_server(server.version)
-
-    if args.action != "run":
-        return
-
-    server.prepare()
-    server.run()
 
 
 if __name__ == "__main__":
