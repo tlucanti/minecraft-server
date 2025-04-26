@@ -32,10 +32,13 @@ def cprint(color, *args, **kwargs):
 def STEP(*args, **kwargs):
     cprint("yellow")
     cprint("yellow", *args, **kwargs)
+
     try:
         yield
-    finally:
-        pass
+        OK("done", *args, **kwargs)
+    except Exception:
+        FAIL("failed", *args, **kwargs)
+        raise
 
 
 def INFO(*args, **kwargs):

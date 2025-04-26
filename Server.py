@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pathlib
 import os
 import subprocess
@@ -6,6 +8,7 @@ from abc import ABC, abstractmethod
 from defs import *
 from cprint import *
 from Cmd import Cmd
+from Saga import Saga
 
 
 class IServer(ABC):
@@ -15,16 +18,54 @@ class IServer(ABC):
         self.launcher: str
         self.folder: str
 
+    @classmethod
+    def create_folder(cls, launcher: str, name: str, version: str) -> IServer:
+        """
+        create server folder and files:
+         - VERSION with server version
+         - TYPE with server type "vanilla" or "forge"
+        """
+        folder = f"{Folder.WORLDS}/{name}"
+        with Saga() as saga:
+            saga.compensation(lambda: Cmd.cmd(f"rm -rf {folder}"))
+
+            Cmd.cmd(f"mkdir -p {folder}/{Folder.DATA}")
+            Cmd.fwrite(f"{folder}/VERSION", version)
+            Cmd.fwrite(f"{folder}/TYPE", launcher)
+
+            return cls.get(name)
+
+    @classmethod
+    def get(cls, name: str) -> IServer:
+        """
+        create server object by it's name
+        find's server folder, version and type and fill returning object
+        """
+        folder = f"{Folder.WORLDS}/{name}"
+        if not pathlib.Path(folder).exists():
+            FAIL(f"server {name} does not exists")
+            raise MCNotFoundError()
+
+        launcher = Cmd.fread(f"{folder}/TYPE")
+        version = Cmd.fread(f"{folder}/VERSION")
+
+        if launcher == LauncherType.VANILLA:
+            return VanillaServer(name, version)
+        elif launcher == LauncherType.FORGE:
+            return ForgeServer(name, version)
+        else:
+            ABORT(f"invalid launcher: {launcher}")
+
     @abstractmethod
-    def prepare(self):
+    def create_files(self):
         pass
 
     @abstractmethod
-    def run(self, log_to_stdout: bool):
+    def run(self, interactive=False):
         pass
 
     @abstractmethod
-    def stop(self, kill: bool = False):
+    def stop(self, kill: bool):
         pass
 
     @abstractmethod
@@ -35,6 +76,15 @@ class IServer(ABC):
     def save(self):
         pass
 
+    def delete(self):
+        """
+        completely delte server with it's folder
+        """
+        if self.is_running():
+            FAIL("cannot delete running server. stop or kill it first")
+            raise MCInvalidOperationError()
+        Cmd.cmd(f"rm -rf {self.folder}")
+
 
 class VanillaServer(IServer):
     def __init__(self, name: str, version: str):
@@ -43,70 +93,87 @@ class VanillaServer(IServer):
         self.launcher = LauncherType.VANILLA
         self.folder = f"{Folder.WORLDS}/{name}"
 
-    def prepare(self):
+    def create_files(self):
         def convert_config(config: dict[str, str]) -> str:
             return "\n".join(f"{key}={value}" for key, value in config.items())
 
-        with STEP("PREPARE SERVER TO RUN"):
-            INFO("accepting eula")
-            Cmd.fwrite(f"{self.folder}/{Folder.DATA}/eula.txt", "eula=true")
+        INFO("accepting eula")
+        Cmd.fwrite(f"{self.folder}/{Folder.DATA}/eula.txt", "eula=true")
 
-            local_config_fname = f"{self.folder}/config.json"
-            server_properties_fname = f"{self.folder}/{Folder.DATA}/server.properties"
+        local_config_fname = f"{self.folder}/config.json"
+        server_properties_fname = f"{self.folder}/{Folder.DATA}/server.properties"
 
-            base_config = Cmd.jload(Cmd.fread("server.properties.json"))
-            global_config = Cmd.jload(Cmd.fread("config.json"))
-            local_config = {}
-            if pathlib.Path(local_config_fname).exists():
-                local_config = Cmd.jload(Cmd.fread(local_config_fname))
-            local_config |= {"level-name": self.name}
+        base_config = Cmd.jload(Cmd.fread("server.properties.json"))
+        global_config = Cmd.jload(Cmd.fread("config.json"))
+        local_config = {}
+        if pathlib.Path(local_config_fname).exists():
+            local_config = Cmd.jload(Cmd.fread(local_config_fname))
+        local_config |= {"level-name": self.name}
 
-            # config override order:
-            # base config <- global config <- local config
-            config = base_config | global_config | local_config
-            Cmd.fwrite(server_properties_fname, convert_config(config))
+        # config override order:
+        # base config <- global config <- local config
+        config = base_config | global_config | local_config
+        INFO("creating server config")
+        Cmd.fwrite(server_properties_fname, convert_config(config))
 
-    def run(self, log_to_stdout=False):
-        with STEP("PREPARE TO START"):
-            if self.is_running():
-                FAIL(f'server "{self.name}" already running')
-                raise MCInvalidOperationError()
+    def run(self, interactive=False):
+        if self.is_running():
+            FAIL(f'server "{self.name}" already running')
+            raise MCInvalidOperationError()
 
-            stdin_fname = f"{self.folder}/stdin.fifo"
-            stdout_fname = f"{self.folder}/stdout.log"
-            history_fname = f"{self.folder}/history.txt"
-            core_fname = pathlib.Path(
-                f"{Folder.SERVERS}/{LauncherType.VANILLA}/{self.version}.jar"
-            ).absolute()
+        stdin_fname = f"{self.folder}/stdin.fifo"
+        stdout_fname = f"{self.folder}/stdout.log"
+        history_fname = f"{self.folder}/history.txt"
+        keeper_pid_fname = f"{self.folder}/KEEPER_PID"
+        java_pid_fname = f"{self.folder}/PID"
+        core_fname = pathlib.Path(
+            f"{Folder.SERVERS}/{LauncherType.VANILLA}/{self.version}.jar"
+        ).absolute()
 
-            Cmd.cmd(f"rm -f {stdin_fname}")
-            Cmd.cmd(f"mkfifo {stdin_fname}")
-            Cmd.cmd(f"touch {history_fname}")
+        with Saga() as saga:
+            with STEP("prepare to start"):
+                saga.compensation(
+                    lambda: Cmd.cmd(f"rm -rf {stdin_fname} {history_fname}")
+                )
+                Cmd.cmd(f"rm -f {stdin_fname}")
+                Cmd.cmd(f"mkfifo {stdin_fname}")
+                Cmd.cmd(f"touch {history_fname}")
 
-        with STEP("RUNNING COMMAND KEEPER PROCESS"):
-            stdin_fd = os.open(stdin_fname, os.O_RDWR | os.O_NONBLOCK)
-            stdin_pipe = os.fdopen(stdin_fd, "r")
+            if not interactive:
+                with STEP("running stdin keeper process"):
+                    stdin_fd = os.open(stdin_fname, os.O_RDWR | os.O_NONBLOCK)
+                    stdin_pipe = os.fdopen(stdin_fd, "r")
+                    saga.compensation(lambda: stdin_pipe.close())
 
-            stdin_keeper = subprocess.Popen(
-                ["tail", "-n0", "-f", history_fname],
-                stdout=open(stdin_fname, "w"),
-                text=True,
-                start_new_session=True,
-                close_fds=True,
-            )
-            if stdin_keeper.returncode is not None:
-                FAIL("failed to start stdin keeper process")
-                raise MCSystemError()
-            Cmd.fwrite(f"{self.folder}/KEEPER_PID", str(stdin_keeper.pid))
-            OK(f"command keeper started with pid {stdin_keeper.pid}")
+                    stdin_keeper = subprocess.Popen(
+                        ["tail", "-n0", "-f", history_fname],
+                        stdout=open(stdin_fname, "w"),
+                        text=True,
+                        start_new_session=True,
+                        close_fds=True,
+                    )
+                    try:
+                        stdin_keeper.wait(0.2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if stdin_keeper.returncode is not None:
+                        FAIL("failed to start stdin keeper process")
+                        raise MCSystemError()
 
-        with STEP("RUNNING SERVER PROCESS"):
-            if log_to_stdout:
-                stdout = None
-            else:
-                stdout = open(stdout_fname, "w")
-            server_proc = subprocess.Popen(
-                [
+                    saga.compensation(lambda: stdin_keeper.kill())
+                    saga.compensation(lambda: Cmd.cmd(f"rm -f {keeper_pid_fname}"))
+                    Cmd.fwrite(keeper_pid_fname, str(stdin_keeper.pid))
+                    OK(f"command keeper started with pid {stdin_keeper.pid}")
+
+            with STEP("running server process"):
+                if interactive:
+                    stdin = None
+                    stdout = None
+                else:
+                    stdin = stdin_pipe
+                    stdout = open(stdout_fname, "w")
+
+                cmd = [
                     "java",
                     "-server",
                     "-XX:+UseParallelGC",
@@ -115,17 +182,33 @@ class VanillaServer(IServer):
                     "-jar",
                     core_fname,
                     "nogui",
-                ],
-                cwd=f"{self.folder}/{DATA_FOLDER}",
-                stdin=stdin_pipe,
-                stdout=stdout,
-                stderr=stderr,
-                text=True,
-                start_new_session=True,
-                close_fds=True,
-            )
-            Cmd.fwrite(f"{self.folder}/PID", str(server_proc.pid))
-            OK(f"server started with pid {stdin_keeper.pid}")
+                ]
+                server_proc = subprocess.Popen(
+                    cmd,
+                    cwd=f"{self.folder}/{Folder.DATA}",
+                    stdin=stdin,
+                    stdout=stdout,
+                    stderr=stdout,
+                    text=True,
+                    # start_new_session=True,
+                    close_fds=True,
+                )
+                try:
+                    server_proc.wait(0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+                if server_proc.returncode is not None:
+                    FAIL(
+                        f"failed to start server process (returncode: {server_proc.returncode})"
+                    )
+                    raise MCSystemError()
+
+                saga.compensation(lambda: server_proc.kill())
+                saga.compensation(lambda: Cmd.cmd(f"rm -f {java_pid_fname}"))
+                Cmd.fwrite(f"{self.folder}/PID", str(server_proc.pid))
+                OK(f"server started with pid {server_proc.pid}")
+                if interactive:
+                    server_proc.wait()
 
     def save(self):
         tz = datetime.timezone(datetime.timedelta(hours=3))
@@ -185,11 +268,17 @@ class ForgeServer(IServer):
     def __init__(self, name: str, version: str):
         pass
 
+    def create_files(self):
+        pass
 
-def Server(launcher: str, name: str, version: str):
-    if launcher == LauncherType.VANILLA:
-        return VanillaServer(name, version)
-    elif launcher == LauncherType.FORGE:
-        return ForgeServer(name, version)
-    else:
-        ABORT(f"invalid launcher: {launcher}")
+    def run(self, log_to_stdout: bool):
+        pass
+
+    def stop(self, kill: bool = False):
+        pass
+
+    def is_running(self) -> bool:
+        return False
+
+    def save(self):
+        pass

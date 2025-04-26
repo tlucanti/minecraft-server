@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 import Manager
-from Enviroment import Enviroment
+from Enviroment import Enviroment, IEnviroment
 from cprint import *
 from defs import *
 
@@ -33,11 +33,11 @@ def add_create_option(subparsers):
 
 def add_delete_option(subparsers):
     delete = subparsers.add_parser(Action.DELETE, help="delete server")
-    delete.add_argument(
-        "--force",
-        action="store_true",
-        help="ignore errors, delete even running server",
-    )
+    # delete.add_argument(
+    #     "--force",
+    #     action="store_true",
+    #     help="ignore errors, delete even running server",
+    # )
     add_name_argument(delete)
     delete.set_defaults(action=Action.DELETE)
 
@@ -45,12 +45,9 @@ def add_delete_option(subparsers):
 def add_run_option(subparsers):
     run = subparsers.add_parser(Action.RUN, help="run server")
     run.add_argument(
-        "--log-to-stdout",
+        "--interactive",
         action="store_true",
-        help=(
-            "print server log to console stdout instead of log file "
-            "(helpful while debugging)"
-        ),
+        help="run server interactively, not as daemon",
     )
     add_name_argument(run)
     run.set_defaults(action=Action.RUN)
@@ -91,7 +88,10 @@ def add_list_option(subparsers):
 
 
 def add_list_running_option(subparsers):
-    pass
+    list_servers = subparsers.add_parser(
+        Action.LIST_RUNNING, help="list running servers"
+    )
+    list_servers.set_defaults(action=Action.LIST_RUNNING)
 
 
 def add_list_versions_option(subparsers):
@@ -133,48 +133,41 @@ def main():
 
     match args.action:
         case Action.CREATE:
-            Manager.create_server()
+            Manager.create_server(args.launcher, args.name, args.version)
 
         case Action.DELETE:
-            Manager.delete_server(args.name, args.force)
+            Manager.delete_server(args.name)
 
         case Action.RUN:
-            server = Manager.find_server(args.name)
-            try:
-                server.run(log_to_stdout=args.log_to_stdout)
-            except Exception:
-                server.stop(kill=True)
-                raise
+            Manager.run_server(args.name, args.interactive)
+            pass
 
         case Action.BACKUP:
-            server = Manager.find_server(args.name)
-            server.save()
+            # Manager.backup_server(args.name)
+            pass
 
         case Action.RESTORE:
-            server = Manager.find_server(args.name)
-            server.restore()
+            # Manager.restore_server(args.name)
+            pass
 
         case Action.STOP:
-            server = Manager.find_server(args.name)
-            server.stop(args.force)
+            # Manager.stop_server(args.name)
+            pass
 
         case Action.LIST:
             Manager.list_servers()
 
         case Action.LIST_RUNNING:
-            Manager.list_running_servers()
+            Manager.list_servers(only_running=True)
 
         case Action.UPDATE_VERSIONS:
-            env = Enviroment(args.launcher)
-            env.update_versions()
+            Manager.update_versions(args.launcher)
 
         case Action.LIST_VERSIONS:
-            env = Enviroment(args.launcher)
-            env.list_versions(args.show_snapshots)
+            Enviroment(args.launcher).list_versions(args.show_snapshots)
 
         case Action.DEPENDENCIES:
-            env = Enviroment(args.launcher)
-            env.download_dependencies()
+            Manager.download_dependencies()
 
         case _:
             ABORT(f"invalid action: {args.action}")

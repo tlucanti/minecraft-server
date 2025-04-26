@@ -8,6 +8,8 @@ import yaml
 
 from cprint import *
 
+MINUTE_SECS = 60
+
 
 class Cmd:
     @classmethod
@@ -54,20 +56,31 @@ class Cmd:
         return stdout
 
     @classmethod
-    def cmd(cls, cmd: str | list, check=True, cwd=None) -> int:
+    def cmd(cls, cmd: str | list, check=True, timeout_mins=1, **kwargs) -> int:
         if isinstance(cmd, str):
             cmd = shlex.split(cmd)
         cprint("green", f"> {' '.join(cmd)}")
 
-        proc = subprocess.run(cmd, text=True, check=check, cwd=cwd)
+        try:
+            proc = subprocess.run(
+                cmd,
+                text=True,
+                check=check,
+                timeout=timeout_mins * MINUTE_SECS,
+                **kwargs,
+            )
+        except subprocess.TimeoutExpired:
+            FAIL(f"timed out after {timeout_mins}m running command {cmd}")
+            raise
         return proc.returncode
 
     @classmethod
-    def wget(cls, url: str, out: str, backoff: int = 10, timeout: int = 100):
+    def wget(cls, url: str, out: str, backoff_sec=10, timeout_mins=10):
         if pathlib.Path(out).exists():
             FAIL(f"output path {out} exists")
             raise MCFetchError()
 
+        timeout = timeout_mins * MINUTE_SECS
         time_start = time.time()
         prev_file_size = 0
 
@@ -75,7 +88,7 @@ class Cmd:
         try:
             while True:
                 try:
-                    ret = proc.wait(backoff)
+                    ret = proc.wait(backoff_sec)
                     if ret:
                         FAIL(f"failed to download from url: {url}")
                         raise MCFetchError()
@@ -100,4 +113,32 @@ class Cmd:
 
         except Exception:
             Cmd.cmd(f"rm -f {out}")
+            raise
+
+    @classmethod
+    def git_clone(cls, url: str, dst="", timeout_mins=10):
+        try:
+            Cmd.cmd(
+                f"git ls-remote {url} --quiet",
+                env={"GIT_TERMINAL_PROMPT": "0"},
+                timeout_mins=timeout_mins,
+            )
+        except subprocess.CalledProcessError:
+            FAIL(f"repository {url} does not exist or no internet connection")
+            raise
+        except subprocess.TimeoutExpired:
+            FAIL(f"timed out while checking repository avaliability")
+            raise
+
+        try:
+            Cmd.cmd(
+                f"git clone --depth=1 --progress {url} {dst}",
+                env={"GIT_TERMINAL_PROMPT": "0"},
+                timeout_mins=timeout_mins,
+            )
+        except subprocess.CalledProcessError:
+            FAIL(f"failed to clone repo")
+            raise
+        except subprocess.TimeoutExpired:
+            FAIL(f"timed out after {timeout_mins}m while cloning repository")
             raise
