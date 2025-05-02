@@ -69,6 +69,10 @@ class IServer(ABC):
         pass
 
     @abstractmethod
+    def send_cmd(self, cmd: str):
+        pass
+
+    @abstractmethod
     def is_running(self) -> bool:
         pass
 
@@ -133,7 +137,7 @@ class VanillaServer(IServer):
         with Saga() as saga:
             with STEP("prepare to start"):
                 saga.compensation(
-                    lambda: Cmd.cmd(f"rm -rf {stdin_fname} {history_fname}")
+                    lambda: Cmd.cmd(f"rm -f {stdin_fname} {history_fname}")
                 )
                 Cmd.cmd(f"rm -f {stdin_fname}")
                 Cmd.cmd(f"mkfifo {stdin_fname}")
@@ -142,12 +146,12 @@ class VanillaServer(IServer):
             if not interactive:
                 with STEP("running stdin keeper process"):
                     stdin_fd = os.open(stdin_fname, os.O_RDWR | os.O_NONBLOCK)
-                    stdin_pipe = os.fdopen(stdin_fd, "r")
+                    stdin_pipe = os.fdopen(stdin_fd, "w")
                     saga.compensation(lambda: stdin_pipe.close())
 
                     stdin_keeper = subprocess.Popen(
                         ["tail", "-n0", "-f", history_fname],
-                        stdout=open(stdin_fname, "w"),
+                        stdout=stdin_pipe,
                         text=True,
                         start_new_session=True,
                         close_fds=True,
@@ -170,7 +174,7 @@ class VanillaServer(IServer):
                     stdin = None
                     stdout = None
                 else:
-                    stdin = stdin_pipe
+                    stdin = open(stdin_fname, "r")
                     stdout = open(stdout_fname, "w")
 
                 cmd = [
@@ -201,12 +205,18 @@ class VanillaServer(IServer):
                     FAIL(
                         f"failed to start server process (returncode: {server_proc.returncode})"
                     )
+                    INFO(f"stdout:\n{Cmd.fread(stdout_fname)}")
                     raise MCSystemError()
 
                 saga.compensation(lambda: server_proc.kill())
                 saga.compensation(lambda: Cmd.cmd(f"rm -f {java_pid_fname}"))
                 Cmd.fwrite(f"{self.folder}/PID", str(server_proc.pid))
                 OK(f"server started with pid {server_proc.pid}")
+
+            with STEP("waiting server online"):
+                Cmd.wait_for_line(stdout_fname, "Done")
+                OK("server online")
+
                 if interactive:
                     server_proc.wait()
 
@@ -220,43 +230,36 @@ class VanillaServer(IServer):
         Cmd.cmd(f'git -C {WORLDS_FOLDER} commit --allow-empty -m "{message}"')
 
     def stop(self, kill=False):
-        server_exists = pathlib.Path(f"{self.folder}/PID").exists()
-        keeper_exists = pathlib.Path(f"{self.folder}/KEEPER_PID").exists()
-
-        if not kill and not self.is_running():
+        if not self.is_running():
             FAIL(f"server {self.name} is not running")
             raise MCInvalidOperationError()
 
-        if server_exists:
+        with STEP("stopping server process"):
             pid = Cmd.fread(f"{self.folder}/PID")
             if kill:
-                cprint("red", "KILLING SERVER")
                 INFO(f"found server process with pid {pid}")
                 Cmd.cmd(f"kill {pid}", check=False)
             else:
-                cprint("yellow", "STOPPING SERVER")
                 INFO(f"found server process with pid {pid}")
-                self.send_cmd("/stop")
-            Cmd.cmd(f"rm {self.folder}/PID")
-        else:
-            WARN("server process not running")
+                self.send_cmd("stop")
 
-        if keeper_exists:
-            if kill:
-                cprint("red", "KILLING KEEPER PROCESS")
-            else:
-                cprint("yellow", "STOPPING KEEPER PROCESS")
-            print()
+        with STEP("waiting server to stop"):
+            Cmd.waitpid(int(pid))
+            Cmd.cmd(f"rm {self.folder}/PID")
+
+        with STEP("stopping keeper process"):
             keeper_pid = Cmd.fread(f"{self.folder}/KEEPER_PID")
             INFO(f"found keeper process with pid {keeper_pid}")
             Cmd.cmd(f"kill {keeper_pid}", check=False)
             Cmd.cmd(f"rm {self.folder}/KEEPER_PID")
-        else:
-            WARN("keeper process not running")
 
     def send_cmd(self, cmd: str):
+        if not self.is_running():
+            FAIL(f"server {self.name} is not running")
+            raise MCInvalidOperationError()
+
         INFO(f'sending command "{cmd}" to server {self.name}')
-        Cmd.fappend(f"{self.folder}/history.txt", cmd)
+        Cmd.fappend(f"{self.folder}/history.txt", cmd + "\n")
 
     def is_running(self):
         server_exists = pathlib.Path(f"{self.folder}/PID").exists()

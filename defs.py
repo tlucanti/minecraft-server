@@ -26,6 +26,7 @@ class Action:
     DELETE = "delete"
     RUN = "run"
     STOP = "stop"
+    CMD = "cmd"
     BACKUP = "backup"
     RESTORE = "restore"
     LIST = "list"

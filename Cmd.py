@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import pathlib
 import shlex
 import subprocess
@@ -7,6 +8,7 @@ import time
 import yaml
 
 from cprint import *
+from Backoff import Backoff
 
 MINUTE_SECS = 60
 
@@ -75,7 +77,7 @@ class Cmd:
         return proc.returncode
 
     @classmethod
-    def wget(cls, url: str, out: str, backoff_sec=10, timeout_mins=10):
+    def wget(cls, url: str, out: str, timeout_mins=10, backoff_secs=10):
         if pathlib.Path(out).exists():
             FAIL(f"output path {out} exists")
             raise MCFetchError()
@@ -88,7 +90,7 @@ class Cmd:
         try:
             while True:
                 try:
-                    ret = proc.wait(backoff_sec)
+                    ret = proc.wait(backoff_secs)
                     if ret:
                         FAIL(f"failed to download from url: {url}")
                         raise MCFetchError()
@@ -114,6 +116,20 @@ class Cmd:
         except Exception:
             Cmd.cmd(f"rm -f {out}")
             raise
+
+    @classmethod
+    def waitpid(cls, pid: int, timeout_mins=10, backoff_secs=1):
+        bo = Backoff(timeout_mins, backoff_secs)
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            if bo.timeout():
+                FAIL(
+                    f"timed out while waiting for pid {pid} after {timeout_mins} minutes"
+                )
+            bo.backoff()
 
     @classmethod
     def git_clone(cls, url: str, dst="", timeout_mins=10):
@@ -142,3 +158,12 @@ class Cmd:
         except subprocess.TimeoutExpired:
             FAIL(f"timed out after {timeout_mins}m while cloning repository")
             raise
+
+    @classmethod
+    def wait_for_line(cls, fname: str, line: str, timeout_mins=5, backoff_secs=1):
+        bo = Backoff(timeout_mins, backoff_secs)
+        while line not in Cmd.fread(fname):
+            if bo.timeout():
+                FAIL(f"waiting for line {line} timed out after {timeout_mins} minutes")
+                raise MCFetchError()
+            bo.backoff()

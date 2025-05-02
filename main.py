@@ -70,6 +70,13 @@ def add_stop_option(subparsers):
     stop.set_defaults(action=Action.STOP)
 
 
+def add_cmd_option(subparsers):
+    cmd = subparsers.add_parser(Action.CMD, help="run command to server")
+    cmd.add_argument("command", help="command to run on server")
+    add_name_argument(cmd)
+    cmd.set_defaults(action=Action.CMD)
+
+
 def add_backup_option(subparsers):
     backup = subparsers.add_parser(
         Action.BACKUP, help="backup existing server to repository"
@@ -122,6 +129,7 @@ def main():
     add_delete_option(subparsers)
     add_run_option(subparsers)
     add_stop_option(subparsers)
+    add_cmd_option(subparsers)
     add_backup_option(subparsers)
     add_restore_option(subparsers)
     add_list_option(subparsers)
@@ -140,7 +148,12 @@ def main():
 
         case Action.RUN:
             Manager.run_server(args.name, args.interactive)
-            pass
+
+        case Action.STOP:
+            Manager.stop_server(args.name)
+
+        case Action.CMD:
+            Manager.send_cmd(args.name, args.command)
 
         case Action.BACKUP:
             # Manager.backup_server(args.name)
@@ -148,10 +161,6 @@ def main():
 
         case Action.RESTORE:
             # Manager.restore_server(args.name)
-            pass
-
-        case Action.STOP:
-            # Manager.stop_server(args.name)
             pass
 
         case Action.LIST:

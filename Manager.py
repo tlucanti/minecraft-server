@@ -53,15 +53,25 @@ def run_server(name: str, interactive):
     server.run(interactive)
 
 
+def stop_server(name: str):
+    with STEP(f'finding server "{name}"'):
+        server = IServer.get(name)
+
+    server.stop(kill=False)
+
+
+def send_cmd(name: str, cmd: str):
+    with STEP(f'finding server "{name}"'):
+        server = IServer.get(name)
+
+    server.send_cmd(cmd)
+
+
 def backup_server(name: str):
     pass
 
 
 def restore_server(name: str):
-    pass
-
-
-def stop_server(name: str):
     pass
 
 
