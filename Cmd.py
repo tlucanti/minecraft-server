@@ -160,6 +160,15 @@ class Cmd:
             raise
 
     @classmethod
+    def wait_for_file(cls, fname: str, timeout_mins=1, backoff_secs=0.2):
+        bo = Backoff(timeout_mins, backoff_secs)
+        while not pathlib.Path(fname).exists():
+            if bo.timeout():
+                FAIL(f"waiting for file {fname} timed out after {timeout_mins} minutes")
+                raise MCFetchError()
+            bo.backoff()
+
+    @classmethod
     def wait_for_line(cls, fname: str, line: str, timeout_mins=5, backoff_secs=1):
         bo = Backoff(timeout_mins, backoff_secs)
         while line not in Cmd.fread(fname):

@@ -4,7 +4,7 @@ import time
 
 
 class Backoff:
-    def __init__(self, timeout_mins: int, backoff_secs: int):
+    def __init__(self, timeout_mins: float, backoff_secs: float):
         self.start_time = time.time()
         self.timeout_mins = timeout_mins
         self.backoff_secs = backoff_secs

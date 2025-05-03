@@ -14,11 +14,16 @@ class Saga:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is not None:
+            DEBUG("running compensation steps")
             for compensation in reversed(self.compensations):
                 compensation()
 
         for defer in reversed(self.defers):
             defer()
+
+        if exc_type is not None:
+            DEBUG(exc_type)
+            raise
 
         return False
 

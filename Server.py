@@ -9,6 +9,7 @@ from defs import *
 from cprint import *
 from Cmd import Cmd
 from Saga import Saga
+from Daemon import daemon
 
 
 class IServer(ABC):
@@ -145,38 +146,13 @@ class VanillaServer(IServer):
 
             if not interactive:
                 with STEP("running stdin keeper process"):
-                    stdin_fd = os.open(stdin_fname, os.O_RDWR | os.O_NONBLOCK)
-                    stdin_pipe = os.fdopen(stdin_fd, "w")
-                    saga.compensation(lambda: stdin_pipe.close())
-
-                    stdin_keeper = subprocess.Popen(
-                        ["tail", "-n0", "-f", history_fname],
-                        stdout=stdin_pipe,
-                        text=True,
-                        start_new_session=True,
-                        close_fds=True,
-                    )
-                    try:
-                        stdin_keeper.wait(0.2)
-                    except subprocess.TimeoutExpired:
-                        pass
-                    if stdin_keeper.returncode is not None:
-                        FAIL("failed to start stdin keeper process")
-                        raise MCSystemError()
-
-                    saga.compensation(lambda: stdin_keeper.kill())
-                    saga.compensation(lambda: Cmd.cmd(f"rm -f {keeper_pid_fname}"))
-                    Cmd.fwrite(keeper_pid_fname, str(stdin_keeper.pid))
-                    OK(f"command keeper started with pid {stdin_keeper.pid}")
+                    cmd = ["tail", "-n0", "-f", history_fname]
+                    daemon(cmd, stdout=stdin_fname, pidfile=keeper_pid_fname)
+                    # tail is opening pipe, so forked process will wait until other
+                    # end of pipe will opened by server process, so we cannot wait here
+                    # to print keeper process pid
 
             with STEP("running server process"):
-                if interactive:
-                    stdin = None
-                    stdout = None
-                else:
-                    stdin = open(stdin_fname, "r")
-                    stdout = open(stdout_fname, "w")
-
                 cmd = [
                     "java",
                     "-server",
@@ -187,38 +163,32 @@ class VanillaServer(IServer):
                     core_fname,
                     "nogui",
                 ]
-                server_proc = subprocess.Popen(
-                    cmd,
-                    cwd=f"{self.folder}/{Folder.DATA}",
-                    stdin=stdin,
-                    stdout=stdout,
-                    stderr=stdout,
-                    text=True,
-                    # start_new_session=True,
-                    close_fds=True,
-                )
-                try:
-                    server_proc.wait(0.5)
-                except subprocess.TimeoutExpired:
-                    pass
-                if server_proc.returncode is not None:
-                    FAIL(
-                        f"failed to start server process (returncode: {server_proc.returncode})"
-                    )
-                    INFO(f"stdout:\n{Cmd.fread(stdout_fname)}")
-                    raise MCSystemError()
+                cwd = f"{self.folder}/{Folder.DATA}"
 
-                saga.compensation(lambda: server_proc.kill())
-                saga.compensation(lambda: Cmd.cmd(f"rm -f {java_pid_fname}"))
-                Cmd.fwrite(f"{self.folder}/PID", str(server_proc.pid))
-                OK(f"server started with pid {server_proc.pid}")
+                if interactive:
+                    Cmd.cmd(cmd, cwd=cwd)
+                    return
+
+                daemon(
+                    cmd,
+                    stdin=stdin_fname,
+                    stdout=stdout_fname,
+                    cwd=cwd,
+                    pidfile=java_pid_fname,
+                )
+
+            with STEP("waiting daemons to start"):
+                Cmd.wait_for_file(keeper_pid_fname)
+                pid = Cmd.fread(keeper_pid_fname)
+                OK(f"command keeper started with pid {pid}")
+
+                Cmd.wait_for_file(java_pid_fname)
+                pid = Cmd.fread(java_pid_fname)
+                OK(f"server started with pid {pid}")
 
             with STEP("waiting server online"):
                 Cmd.wait_for_line(stdout_fname, "Done")
                 OK("server online")
-
-                if interactive:
-                    server_proc.wait()
 
     def save(self):
         tz = datetime.timezone(datetime.timedelta(hours=3))

@@ -21,6 +21,7 @@ class Java:
 
 
 class Action:
+    HELP = "help"
     DEPENDENCIES = "deps"
     CREATE = "create"
     DELETE = "delete"

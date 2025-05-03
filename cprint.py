@@ -5,6 +5,10 @@ from typing import NoReturn
 from MCException import *
 
 
+def log(*args, **kwargs):
+    print(*args, **kwargs, flush=True)
+
+
 def cprint(color, *args, **kwargs):
     color_table = {
         "red": "\033[0;31m",
@@ -25,7 +29,7 @@ def cprint(color, *args, **kwargs):
     }
     print(color_table[color], end="", file=sys.stderr)
     print(*args, **kwargs, file=sys.stderr)
-    print(color_table["reset"], end="", flush=True, file=sys.stderr)
+    print(color_table["reset"], end="", file=sys.stderr, flush=True)
 
 
 @contextmanager
@@ -39,6 +43,10 @@ def STEP(*args, **kwargs):
     except Exception:
         FAIL("failed", *args, **kwargs)
         raise
+
+
+def DEBUG(*args, **kwargs):
+    cprint("bwhite", "[DBUG]:", *args, **kwargs)
 
 
 def INFO(*args, **kwargs):

@@ -74,7 +74,7 @@ class VanillaEnviroment(IEnviroment):
             v = line.split(":", maxsplit=1)[0].replace('"', "").strip()
             if not show_snapshots and self._filter_version(v):
                 continue
-            print(v)
+            log(v)
 
     def download_server(self, version: str) -> str:
         folder = f"{Folder.SERVERS}/{LauncherType.VANILLA}"
@@ -118,10 +118,8 @@ class VanillaEnviroment(IEnviroment):
 #                filtered[version] = f"{version}-latest"
 #
 #        Cmd.fwrite("versions.forge.json", Cmd.jdump(filtered))
-#        print()
 #
 #    def list_versions(self, show_snapshots: bool):
-#        cprint("yellow", "SUPPORTED FORGE VERSIONS")
 #        j = Cmd.jload(Cmd.fread("versions.forge.json"))
 #        print("\n".join(j.keys()))
 #

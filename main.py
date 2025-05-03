@@ -18,6 +18,11 @@ def add_launcher_argument(subparser):
     subparser.add_argument("--launcher", choices=["vanilla", "forge"], required=True)
 
 
+def add_help_option(subparsers):
+    deps = subparsers.add_parser(Action.HELP, help="print help message")
+    deps.set_defaults(action=Action.HELP)
+
+
 def add_deps_option(subparsers):
     deps = subparsers.add_parser(Action.DEPENDENCIES, help="install dependencies")
     deps.set_defaults(action=Action.DEPENDENCIES)
@@ -124,6 +129,7 @@ def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(required=True)
 
+    add_help_option(subparsers)
     add_deps_option(subparsers)
     add_create_option(subparsers)
     add_delete_option(subparsers)
@@ -140,6 +146,10 @@ def main():
     args = parser.parse_args()
 
     match args.action:
+        case Action.HELP:
+            parser.print_help()
+            return
+
         case Action.CREATE:
             Manager.create_server(args.launcher, args.name, args.version)
 
@@ -183,4 +193,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except MCError as e:
+        print(e)
