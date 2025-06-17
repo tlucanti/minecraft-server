@@ -76,14 +76,25 @@ def restore_server(name: str):
 
 
 def list_servers(only_running=False):
+    response = []
     for server in iter_servers():
-        if server.is_running():
+        is_running = server.is_running()
+        if is_running:
             running_msg = "server running"
         else:
             running_msg = "server not running"
             if only_running:
                 continue
-        print(f"{server.name} {server.launcher} {server.version} ({running_msg})")
+        log(f"{server.name} {server.launcher} {server.version} ({running_msg})")
+        response.append(
+            {
+                "name": server.name,
+                "launcher": server.launcher,
+                "version": server.version,
+                "running": is_running,
+            }
+        )
+    return response
 
 
 def save_server(name: str):
